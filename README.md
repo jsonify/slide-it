@@ -4,8 +4,13 @@ A real-time, head-to-head **sliding tile race** for iPhone, iPad, or any browser
 Everyone gets the same scrambled 5×5 tray. When the countdown ends, a random 3×3
 target appears. First to make the middle of their tray match it wins the round.
 
-No App Store needed. It's a web app your friends open from a link, and they can
-add it to their Home Screen to play full-screen.
+It comes in two flavours:
+
+- **Native iPhone & iPad app** (`ios/`): SwiftUI, with online play through Game
+  Center and nearby play over Wi-Fi/Bluetooth. **No server to host.**
+  See [ios/README.md](ios/README.md).
+- **Web app** (this folder): runs in any browser via a link. Needs a small Node
+  server online.
 
 ## Features
 
