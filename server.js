@@ -9,7 +9,7 @@ import { extname, join, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { WebSocketServer } from 'ws';
-import { makeTarget, makeBoard, slide, isSolved, matches } from './public/game.js';
+import { makeGoal, makeBoardFor, classicGoal, slide, goalSolved, progress, CHALLENGES, CHALLENGE_IDS } from './public/game.js';
 
 const PORT = Number(process.env.PORT) || 3000;
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), 'public');
@@ -90,10 +90,20 @@ const cleanName = (s) =>
     .trim()
     .slice(0, 16) || 'Player';
 
-// How a round's target + starting tray are dealt. Tests can swap this out.
-const randomDeal = () => {
-  const target = makeTarget();
-  return { target, board: makeBoard(target) };
+// How a round's goal + starting tray are dealt for a challenge. Tests can swap
+// this out (returning { goal, board }, or a legacy { target, board }).
+const randomDeal = (challenge) => {
+  const goal = makeGoal(challenge);
+  return { goal, board: makeBoardFor(goal) };
+};
+
+const shuffled = (arr) => {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 };
 
 class Room {
@@ -106,7 +116,11 @@ class Room {
     this.rounds = 3; // best of N
     this.round = 0;
     this.roundId = 0; // unique per round, never reused
-    this.target = null;
+    this.challenges = ['classic']; // which challenges are in rotation
+    this.order = 'shuffle'; // shuffle | climb (rounds get harder)
+    this.deck = [];
+    this.challenge = null; // this round's challenge id
+    this.goal = null;
     this.startBoard = null;
     this.goAt = 0;
     this.result = null; // last round result
@@ -166,16 +180,31 @@ class Room {
     for (const p of this.players.values()) p.score = 0;
     this.round = 0;
     this.result = null;
+    this.deck = [];
     this.startRound();
+  }
+
+  /** Next challenge: work through the selected set without repeats, then go again. */
+  nextChallenge() {
+    if (!this.deck.length) {
+      const fresh = shuffled(this.challenges);
+      if (this.order === 'climb') fresh.sort((a, b) => CHALLENGES[a].stars - CHALLENGES[b].stars);
+      // Don't play the same challenge twice in a row across a reshuffle.
+      if (fresh.length > 1 && fresh[0] === this.challenge) fresh.push(fresh.shift());
+      this.deck = fresh;
+    }
+    return this.deck.shift();
   }
 
   startRound() {
     this.clearTimer();
     this.round += 1;
     this.roundId += 1;
-    const { target, board } = this.deal();
-    this.target = target;
-    this.startBoard = board;
+    this.challenge = this.nextChallenge();
+    const dealt = this.deal(this.challenge);
+    this.goal = dealt.goal || classicGoal(dealt.target);
+    this.challenge = this.goal.id;
+    this.startBoard = dealt.board;
     this.result = null;
     // Everyone gets the identical scrambled tray, so it's pure skill.
     for (const p of this.players.values()) {
@@ -204,7 +233,7 @@ class Room {
     player.board = res.board;
     player.moves += 1;
     this.broadcast({ t: 'board', id: player.id, b: player.board.join(''), m: player.moves });
-    if (isSolved(player.board, this.target)) this.finishRound(player);
+    if (goalSolved(player.board, this.goal)) this.finishRound(player);
     return true;
   }
 
@@ -229,7 +258,8 @@ class Room {
   toLobby() {
     this.clearTimer();
     this.state = 'lobby';
-    this.target = null;
+    this.goal = null;
+    this.challenge = null;
     for (const p of this.players.values()) p.board = null;
     this.broadcastRoom();
   }
@@ -246,8 +276,12 @@ class Room {
       winsNeeded: this.winsNeeded,
       goAt: this.goAt,
       now: Date.now(),
-      // Hide the target during the countdown so nobody gets a head start.
-      target: this.state === 'countdown' || !this.target ? null : this.target.join(''),
+      challenges: this.challenges,
+      order: this.order,
+      // The challenge type is announced during the countdown, but the goal
+      // itself stays hidden so nobody gets a head start.
+      challenge: this.state === 'lobby' ? null : this.challenge,
+      goal: this.state === 'countdown' || !this.goal ? null : this.goal,
       result: this.result,
       players: [...this.players.values()].map((p) => ({
         id: p.id,
@@ -257,7 +291,7 @@ class Room {
         connected: !!p.socket,
         board: p.board ? p.board.join('') : null,
         moves: p.moves,
-        matches: p.board && this.target ? matches(p.board, this.target) : 0,
+        matches: p.board && this.goal ? progress(p.board, this.goal).n : 0,
       })),
     };
   }
@@ -325,12 +359,17 @@ function handle(ws, msg, opts) {
   const isHost = room.hostId === player.id;
 
   switch (msg.t) {
-    case 'settings':
-      if (isHost && room.state === 'lobby' && [1, 3, 5, 7].includes(msg.rounds)) {
-        room.rounds = msg.rounds;
-        room.broadcastRoom();
+    case 'settings': {
+      if (!isHost || room.state !== 'lobby') break;
+      if ([1, 3, 5, 7].includes(msg.rounds)) room.rounds = msg.rounds;
+      if (Array.isArray(msg.challenges)) {
+        const picked = CHALLENGE_IDS.filter((id) => msg.challenges.includes(id));
+        if (picked.length) room.challenges = picked;
       }
+      if (msg.order === 'shuffle' || msg.order === 'climb') room.order = msg.order;
+      room.broadcastRoom();
       break;
+    }
     case 'start':
       if (isHost && (room.state === 'lobby' || room.state === 'matchover')) room.startMatch();
       break;

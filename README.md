@@ -14,6 +14,7 @@ It comes in two flavours:
 
 ## Features
 
+- **10 challenge types** from easy to brutal (see below). The host picks which are in the match, with presets and a "get harder" mode
 - **Live multiplayer for 2–6 players**: 4-letter room codes, plus invite links through the iOS share sheet
 - **Fair races**: every player starts from the identical scramble
 - **Server-authoritative**: the server deals the boards, checks every move and decides the winner, so nobody can cheat
@@ -22,7 +23,7 @@ It comes in two flavours:
 - **Tap or swipe**: tap any tile in line with the gap to push the whole row or column, or swipe
 - Emoji reactions, sound effects, haptic ticks (iOS 18+), keeps the screen awake while you play
 - **Reconnects automatically** if a phone locks or switches apps, and you keep your seat and score
-- **Solo practice** with personal-best times
+- **Solo practice** for any challenge, with a personal-best time for each
 - Colour-blind friendly: every colour also has its own shape
 - Layouts for phone portrait, iPad portrait and iPad/desktop landscape
 
@@ -56,6 +57,33 @@ The server listens on `$PORT`.
 4. After 3‑2‑1, the target appears. Slide tiles until the **middle 3×3** (dashed box) matches it.
    The outer ring doesn't matter. Matching tiles get a white glow.
 5. First to match wins the round. Win enough rounds to take the match.
+
+## Challenges
+
+Each round is one challenge. The countdown announces which one is coming, and
+the target card shows its picture and reminds you of any twist.
+
+| | Challenge | What you do |
+|---|---|---|
+| ★ | 🎯 Classic | Match the middle 3×3 |
+| ★ | ✨ Wildcards | Middle 3×3, but three star squares take any colour |
+| ★ | 🧭 Anywhere | Build the 3×3 pattern anywhere on the tray |
+| ★★ | 🪞 Mirror | Build the picture flipped left ↔ right |
+| ★★ | ➕ Big Cross | Match the full middle row and column (9 tiles, out to the edges) |
+| ★★ | ❌ X Marks | Match both long diagonals |
+| ★★★ | 🌀 Twist | Build the picture turned 90° clockwise |
+| ★★★ | 🧠 Memory | The target vanishes 5s after GO. Peeking shows it again but freezes your tray for 1.5s |
+| ★★★ | 🔲 Four Corners | Match all four 2×2 corner blocks (16 tiles) |
+| ★★★ | 💍 The Ring | Match the whole outer ring (16 tiles) |
+
+In the lobby the host picks a preset (**Classic**, **Party mix**, **Brain
+burners**, **Everything**) or toggles challenges one by one, and chooses
+**Shuffle** or **Get harder** (easiest first, building up to the hardest).
+Rounds work through the chosen set without repeats.
+
+Adding a challenge means adding an entry to `CHALLENGES` and a case in
+`makeGoal()` in `public/game.js`. A goal is just a list of tray cells and the
+colour each needs, so the server, win check and UI pick it up automatically.
 
 ## Project layout
 

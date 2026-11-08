@@ -75,7 +75,8 @@ test('two players can create, join, race and finish a match', async () => {
   a.send({ t: 'start' });
 
   const cd = await a.next((m) => m.t === 'room' && m.state === 'countdown');
-  assert.equal(cd.target, null, 'target hidden during countdown');
+  assert.equal(cd.goal, null, 'goal hidden during countdown');
+  assert.equal(cd.challenge, 'classic', 'challenge type announced during countdown');
   const aBoard = cd.players.find((p) => p.id === wa.you).board;
   const bBoard = cd.players.find((p) => p.id === wb.you).board;
   assert.equal(aBoard, bBoard, 'everyone gets the same starting tray');
@@ -87,7 +88,7 @@ test('two players can create, join, race and finish a match', async () => {
   await a.next((m) => m.t === 'sync');
 
   const play = await a.next((m) => m.t === 'room' && m.state === 'playing');
-  const target = play.target.split('');
+  const target = play.goal.want;
 
   // Illegal move -> server resyncs.
   const gap = early.indexOf(EMPTY);
@@ -135,5 +136,36 @@ test('two players can create, join, race and finish a match', async () => {
   assert.equal(err.code, 'no-room');
 
   for (const x of [a, b2, c, d]) x.ws.close();
+  await new Promise((r) => server.close(r));
+});
+
+test('host picks challenges; rounds rotate through them', async () => {
+  const server = createServer();
+  await new Promise((r) => server.listen(0, r));
+  const { port } = server.address();
+  const a = client(port);
+  const b = client(port);
+  await Promise.all([a.ready, b.ready]);
+  a.send({ t: 'create', name: 'Ann' });
+  const wa = await a.next((m) => m.t === 'welcome');
+  b.send({ t: 'join', code: wa.code, name: 'Ben' });
+  await b.next((m) => m.t === 'welcome');
+
+  // Non-host settings are ignored; unknown ids are dropped.
+  b.send({ t: 'settings', challenges: ['ring'] });
+  a.send({ t: 'settings', challenges: ['mirror', 'ring', 'bogus'], order: 'climb', rounds: 3 });
+  const lobby = await a.next((m) => m.t === 'room' && m.order === 'climb' && m.players.length === 2);
+  assert.deepEqual(lobby.challenges, ['mirror', 'ring']);
+
+  // Empty selections are refused.
+  a.send({ t: 'settings', challenges: [] });
+  a.send({ t: 'start' });
+  const cd = await a.next((m) => m.t === 'room' && m.state === 'countdown');
+  assert.equal(cd.challenge, 'mirror', '"get harder" starts with the easier challenge');
+  const play = await a.next((m) => m.t === 'room' && m.state === 'playing');
+  assert.equal(play.goal.id, 'mirror');
+  assert.equal(play.goal.want.length, 9);
+
+  for (const x of [a, b]) x.ws.close();
   await new Promise((r) => server.close(r));
 });
