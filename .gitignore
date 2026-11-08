@@ -1,3 +1,9 @@
 node_modules/
 .DS_Store
 *.log
+# Xcode / Swift
+xcuserdata/
+DerivedData/
+.build/
+*.xcuserstate
+.swiftpm/

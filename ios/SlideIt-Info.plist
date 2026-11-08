@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged with the keys Xcode generates from the build settings. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Slide It uses your local network to find and play with friends nearby.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_slideit._tcp</string>
+		<string>_slideit._udp</string>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+</dict>
+</plist>
