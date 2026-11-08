@@ -1,4 +1,7 @@
-import { EMPTY, CENTER, SIZE, makeTarget, makeBoard, slide, canSlide, isSolved, matches } from './game.js';
+import {
+  EMPTY, CENTER, SIZE, WILD, slide, canSlide,
+  makeGoal, makeBoardFor, progress, matchedCells, goalSolved, CHALLENGES, CHALLENGE_IDS, PRESETS,
+} from './game.js';
 
 // ======================================================================= utils
 const $ = (s) => document.querySelector(s);
@@ -118,8 +121,16 @@ function tileEl(c) {
   d.dataset.c = c;
   if (SHAPES[c]) d.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${SHAPES[c]}</svg>`;
   else if (c === '?') d.textContent = '?';
+  else if (c === WILD) {
+    d.dataset.c = 'wild';
+    d.textContent = '★';
+  } else if (c === EMPTY) d.dataset.c = 'blank';
   return d;
 }
+
+/** Which tray cells a challenge is about. Fixed per challenge, so it's safe to show early. */
+const regionFor = (id) => (id ? makeGoal(id).cells : CENTER);
+const starsOf = (id) => '★'.repeat(CHALLENGES[id]?.stars || 1);
 
 // ======================================================================= tray
 // The player's 5x5 board. Tiles are persistent DOM nodes that slide with CSS
@@ -130,7 +141,8 @@ class Tray {
     this.onMove = onMove;
     this.board = null;
     this.slots = [];
-    this.target = null;
+    this.goal = null; // revealed goal (null until GO)
+    this.region = null; // cells that matter this round (known from the challenge type)
     this.enabled = false;
     this.swipe = null;
     el.addEventListener('pointerdown', (e) => this.down(e));
@@ -138,8 +150,23 @@ class Tray {
     for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) el.addEventListener(ev, () => (this.swipe = null));
   }
 
+  /** Mark which tray cells this round is about (the dashed window / slots). */
+  setRegion(cells) {
+    this.region = cells;
+    for (const m of this.el.querySelectorAll('.window, .slot')) m.remove();
+    const center = cells && cells.length === 9 && cells.every((c, i) => c === CENTER[i]);
+    if (center) this.el.insertAdjacentHTML('afterbegin', '<div class="window"></div>');
+    else if (cells)
+      this.el.insertAdjacentHTML(
+        'afterbegin',
+        cells.map((c) => `<div class="slot" style="--x:${c % SIZE};--y:${Math.floor(c / SIZE)}"></div>`).join(''),
+      );
+    this.el.classList.toggle('anywhere', !cells);
+    this.highlight();
+  }
+
   reset(board) {
-    this.el.innerHTML = '<div class="window"></div>';
+    this.el.innerHTML = '';
     this.el.classList.remove('solved');
     this.board = board.slice();
     this.slots = board.map((c) => (c === EMPTY ? null : { c, el: tileEl(c) }));
@@ -151,7 +178,7 @@ class Tray {
     });
     // Re-enable transitions after first paint.
     requestAnimationFrame(() => requestAnimationFrame(() => this.slots.forEach((t) => t && (t.el.style.transition = ''))));
-    this.highlight();
+    this.setRegion(this.region);
   }
 
   place(t, i) {
@@ -196,11 +223,13 @@ class Tray {
   }
 
   highlight() {
-    this.slots.forEach((t) => t && t.el.classList.remove('match'));
-    if (!this.target) return;
-    CENTER.forEach((ci, k) => {
-      const t = this.slots[ci];
-      if (t && t.c === this.target[k]) t.el.classList.add('match');
+    const region = this.region ? new Set(this.region) : null;
+    const hit = new Set(this.board ? matchedCells(this.board, this.goal) : []);
+    this.slots.forEach((t, i) => {
+      if (!t) return;
+      t.el.classList.toggle('match', hit.has(i));
+      // Tiles that can't matter this round fade back a little.
+      t.el.classList.toggle('off', !!region && !region.has(i));
     });
   }
 
@@ -362,7 +391,7 @@ function onMessage(m) {
       if (!p) return;
       p.board = m.b;
       p.moves = m.m;
-      p.matches = S.room.target ? matches(m.b.split(''), S.room.target.split('')) : 0;
+      p.matches = S.room.goal ? progress(m.b.split(''), S.room.goal).n : 0;
       if (m.id === S.me) {
         if (m.m >= S.myMoves) reconcile(m.b, m.m);
       } else {
@@ -451,7 +480,7 @@ $('#join-code').addEventListener('keydown', (e) => e.key === 'Enter' && $('#btn-
 $('#btn-solo').onclick = () => {
   sfx.pop();
   store.set('name', myName());
-  startSolo();
+  openSoloPicker();
 };
 $('#btn-howto').onclick = () => $('#overlay-howto').classList.remove('hidden');
 $('#overlay-howto [data-close]').onclick = () => $('#overlay-howto').classList.add('hidden');
@@ -524,6 +553,8 @@ function renderLobby() {
   seg.classList.toggle('readonly', !isHost);
   for (const b of seg.children) b.classList.toggle('on', Number(b.dataset.r) === r.rounds);
 
+  renderChallengePicker(r, isHost);
+
   const ready = r.players.filter((p) => p.connected).length;
   $('#btn-start').classList.toggle('hidden', !isHost);
   $('#btn-start').disabled = ready < 2;
@@ -540,6 +571,48 @@ $('#rounds-seg').onclick = (e) => {
   if (r) net.send({ t: 'settings', rounds: r });
 };
 $('#btn-start').onclick = () => net.send({ t: 'start' });
+
+// ----- challenge picker (host chooses which puzzle types are in the match)
+const PRESET_LABELS = { classic: 'Classic', party: 'Party mix', brain: 'Brain burners', all: 'Everything' };
+$('#preset-seg').innerHTML = Object.entries(PRESET_LABELS).map(([k, v]) => `<button data-p="${k}">${v}</button>`).join('');
+$('#challenge-list').innerHTML = CHALLENGE_IDS.map(
+  (id) => `<button class="chip" data-id="${id}"><span class="ci">${CHALLENGES[id].icon}</span><span class="cn">${CHALLENGES[id].name}</span><span class="stars">${starsOf(id)}</span></button>`,
+).join('');
+
+function renderChallengePicker(r, isHost) {
+  const sel = new Set(r.challenges || ['classic']);
+  const card = $('#challenge-card');
+  card.classList.toggle('readonly', !isHost);
+  for (const b of $('#preset-seg').children) {
+    const set = PRESETS[b.dataset.p];
+    b.classList.toggle('on', set.length === sel.size && set.every((id) => sel.has(id)));
+  }
+  for (const b of $('#challenge-list').children) b.classList.toggle('on', sel.has(b.dataset.id));
+  for (const b of $('#order-seg').children) b.classList.toggle('on', b.dataset.o === (r.order || 'shuffle'));
+  $('#order-row').classList.toggle('hidden', sel.size < 2);
+  $('#challenge-summary').textContent =
+    sel.size === 1
+      ? CHALLENGES[[...sel][0]].rule
+      : `${sel.size} challenges, ${r.order === 'climb' ? 'easiest first, getting harder each round' : 'in a random order'}.`;
+}
+$('#preset-seg').onclick = (e) => {
+  const p = e.target.closest('button')?.dataset.p;
+  if (p) net.send({ t: 'settings', challenges: PRESETS[p] });
+};
+$('#challenge-list').onclick = (e) => {
+  const id = e.target.closest('button')?.dataset.id;
+  if (!id || !S.room) return;
+  const sel = new Set(S.room.challenges);
+  if (sel.has(id)) {
+    if (sel.size === 1) return toast('Pick at least one challenge');
+    sel.delete(id);
+  } else sel.add(id);
+  net.send({ t: 'settings', challenges: CHALLENGE_IDS.filter((x) => sel.has(x)) });
+};
+$('#order-seg').onclick = (e) => {
+  const o = e.target.closest('button')?.dataset.o;
+  if (o) net.send({ t: 'settings', order: o });
+};
 $('#btn-leave-lobby').onclick = () => goHome();
 $('#btn-share').onclick = async () => {
   const code = S.room?.code;
@@ -593,21 +666,24 @@ function renderRoom() {
     S.locked = false;
     S.lastCountdown = null;
     hideOverlays();
-    tray.target = null;
+    tray.goal = null;
+    tray.region = regionFor(r.challenge);
+    S.peekUntil = 0;
     const w = r.players.find((p) => p.id === watchId());
     tray.reset((w?.board || '.'.repeat(25)).split(''));
-    renderTarget(null);
+    renderTarget(null, false, r.challenge);
+    renderBriefing(r.challenge, `Round ${r.round}`);
   } else if (me.board && me.moves >= S.myMoves && (r.state === 'playing' || r.state === 'countdown')) {
     reconcile(me.board, me.moves);
   }
 
   const playing = r.state === 'playing';
-  if (r.target && S.revealed !== r.roundId) {
+  if (r.goal && S.revealed !== r.roundId) {
     S.revealed = r.roundId;
-    tray.target = r.target.split('');
-    renderTarget(tray.target, true);
+    tray.goal = r.goal;
+    renderTarget(r.goal, true);
     tray.highlight();
-    lastMatchCount = matches(tray.board, tray.target);
+    lastMatchCount = progress(tray.board, tray.goal).n;
     if (playing) {
       sfx.go();
       showGo();
@@ -615,10 +691,9 @@ function renderRoom() {
   }
 
   $('#spectate').classList.toggle('hidden', !!me.board || r.state === 'roundover' || r.state === 'matchover');
-  tray.enabled = playing && !!me.board && !S.locked;
+  tray.enabled = playing && !!me.board && !S.locked && !peeking();
   $('#board').classList.toggle('locked', !tray.enabled);
   $('#countdown').classList.toggle('hidden', r.state !== 'countdown');
-  $('#countdown-label').textContent = `Round ${r.round}`;
 
   if ((r.state === 'roundover' || r.state === 'matchover') && S.resultShownFor !== `${r.roundId}:${r.state}`) {
     S.resultShownFor = `${r.roundId}:${r.state}`;
@@ -631,21 +706,76 @@ function renderRoom() {
   renderStats();
 }
 
-function renderTarget(target, reveal = false) {
+
+/** The "Match this" card: the challenge name, its picture and a reminder of any twist. */
+function renderTarget(goal, reveal = false, id = goal?.id) {
+  const ch = CHALLENGES[id] || CHALLENGES.classic;
+  $('#target-name').textContent = `${ch.icon} ${ch.name}`;
+  const how = { mirror: 'Build it flipped ↔', twist: 'Build it turned ↻ 90°', anywhere: 'Anywhere on your tray', wild: '★ = any colour' }[id];
+  $('#target-how').textContent = how || '';
+  $('#target-how').classList.toggle('hidden', !how);
   const el = $('#target');
+  const show = goal?.show || (makeGoal(id).show.w === 5 ? { w: 5, h: 5, tiles: Array(25).fill('?') } : { w: 3, h: 3, tiles: Array(9).fill('?') });
   el.classList.toggle('reveal', reveal);
+  el.classList.toggle('map', show.w === 5);
+  el.classList.remove('veiled');
   el.innerHTML = '';
-  (target || Array(9).fill('?')).forEach((c, i) => {
-    const t = tileEl(c);
-    if (reveal) t.style.animationDelay = `${i * 35}ms`;
+  // In map view the blank cells of a hidden goal still show the shape.
+  const cells = show.w === 5 && !goal ? new Set(regionFor(id)) : null;
+  show.tiles.forEach((c, i) => {
+    const t = tileEl(cells && !cells.has(i) ? EMPTY : c);
+    if (reveal) t.style.animationDelay = `${i * (show.w === 5 ? 12 : 35)}ms`;
     el.appendChild(t);
   });
+  $('#btn-peek').classList.add('hidden');
 }
+
+/** Countdown overlay: tell everyone what kind of challenge is coming. */
+function renderBriefing(id, label) {
+  const ch = CHALLENGES[id] || CHALLENGES.classic;
+  $('#countdown-label').textContent = label;
+  $('#countdown-challenge').innerHTML = `<b>${ch.icon} ${esc(ch.name)}</b> <span class="stars">${starsOf(id)}</span>`;
+  $('#countdown-rule').textContent = ch.rule;
+}
+
+// ----- memory challenge: the target hides after a few seconds; peeking freezes you.
+const peeking = () => Date.now() < (S.peekUntil || 0);
+function currentGoal() {
+  return S.mode === 'solo' ? S.solo?.goal : S.room?.goal;
+}
+function updateVeil(t, goAt, playing) {
+  const goal = currentGoal();
+  const el = $('#target');
+  const veiled = !!goal?.peek && playing && t - goAt > goal.peek && !peeking();
+  if (el.classList.contains('veiled') !== veiled) {
+    el.classList.toggle('veiled', veiled);
+    if (veiled && !S.peekUntil) toast('Target hidden! Tap Peek if you need it.', 1600);
+  }
+  $('#btn-peek').classList.toggle('hidden', !(goal?.peek && playing && t - goAt > goal.peek) || peeking());
+  // Unfreeze after a peek.
+  if (S.peekFrozen && !peeking()) {
+    S.peekFrozen = false;
+    if (S.mode === 'solo' ? S.solo?.state === 'playing' : S.room?.state === 'playing' && meP()?.board && !S.locked) {
+      tray.enabled = true;
+      $('#board').classList.remove('locked');
+    }
+  }
+}
+$('#btn-peek').onclick = () => {
+  if (!tray.enabled) return;
+  S.peekUntil = Date.now() + 1500;
+  S.peekFrozen = true;
+  tray.enabled = false;
+  $('#board').classList.add('locked');
+  $('#target').classList.remove('veiled');
+  $('#btn-peek').classList.add('hidden');
+  sfx.pop();
+};
 
 function onMyMove(i) {
   sfx.slide();
   haptic();
-  const target = tray.target;
+  const goal = tray.goal;
   if (S.mode === 'solo') return soloMove();
   S.myMoves += 1;
   net.send({ t: 'move', i });
@@ -654,8 +784,8 @@ function onMyMove(i) {
     me.board = tray.board.join('');
     me.moves = S.myMoves;
   }
-  matchSound(target);
-  if (target && isSolved(tray.board, target)) {
+  matchSound(goal);
+  if (goal && goalSolved(tray.board, goal)) {
     // Freeze until the server confirms (it decides ties).
     S.locked = true;
     tray.enabled = false;
@@ -664,9 +794,9 @@ function onMyMove(i) {
   renderStats();
 }
 
-function matchSound(target) {
-  if (!target) return;
-  const n = matches(tray.board, target);
+function matchSound(goal) {
+  if (!goal) return;
+  const n = progress(tray.board, goal).n;
   if (n > lastMatchCount) sfx.match();
   else if (n < lastMatchCount) sfx.unmatch();
   lastMatchCount = n;
@@ -674,7 +804,7 @@ function matchSound(target) {
 
 function renderStats() {
   if (S.mode === 'solo') {
-    const best = store.get('best', null);
+    const best = S.solo ? getBest(S.solo.id) : null;
     $('#stat-a-k').textContent = 'Best';
     $('#stat-a').textContent = best ? fmtTime(best.ms) : '—';
     $('#stat-moves').textContent = S.solo?.moves ?? 0;
@@ -707,23 +837,24 @@ function renderOpponents() {
       box.appendChild(el);
     }
     el.classList.toggle('offline', !p.connected);
-    el.classList.toggle('hot', !!p.board && p.matches >= 7 && r.state === 'playing');
+    const total = r.goal ? r.goal.want.length : 9;
+    el.classList.toggle('hot', !!p.board && !!r.goal && p.matches >= total - 2 && r.state === 'playing');
     const av = el.querySelector('.avatar');
     av.style.background = p.color;
     av.textContent = p.name[0].toUpperCase();
     el.querySelector('.opp-name').textContent = p.name;
     el.querySelector('.pips').innerHTML = Array.from({ length: r.winsNeeded }, (_, i) => `<i class="pip${i < p.score ? ' on' : ''}"></i>`).join('');
-    const target = r.target?.split('');
+    const goal = r.goal;
     const cells = el.querySelectorAll('.mini i');
     const b = p.board || '';
+    const hit = new Set(goal && b ? matchedCells(b.split(''), goal) : []);
     cells.forEach((cell, i) => {
       const c = b[i];
       cell.style.background = c && c !== EMPTY ? `var(--${c})` : 'transparent';
-      const k = CENTER.indexOf(i);
-      cell.classList.toggle('m', !!target && k >= 0 && c === target[k]);
+      cell.classList.toggle('m', hit.has(i));
     });
-    el.querySelector('.num').innerHTML = p.board ? `${target ? p.matches : 0}<small>/9</small>` : '<small>watching</small>';
-    el.querySelector('.meter b').style.width = `${p.board && target ? (p.matches / 9) * 100 : 0}%`;
+    el.querySelector('.num').innerHTML = p.board ? `${goal ? p.matches : 0}<small>/${total}</small>` : '<small>watching</small>';
+    el.querySelector('.meter b').style.width = `${p.board && goal ? (p.matches / total) * 100 : 0}%`;
     el.querySelector('.opp-moves').textContent = p.board ? `${p.moves} moves` : p.connected ? '' : 'away';
   }
 }
@@ -731,6 +862,7 @@ function renderOpponents() {
 // ======================================================================= results
 function hideOverlays() {
   $('#overlay-result').classList.add('hidden');
+  $('#overlay-solo').classList.add('hidden');
 }
 
 function scoreboardHTML(winnerId) {
@@ -764,7 +896,7 @@ function showResult() {
   $('#result-title').textContent = iWon
     ? match ? 'You win the match!' : 'You got it!'
     : `${winner?.name || 'Someone'} ${match ? 'wins the match!' : 'got it first'}`;
-  $('#result-sub').textContent = `${fmtTime(res.ms)}s · ${res.moves} moves`;
+  $('#result-sub').textContent = `${CHALLENGES[r.challenge]?.name || 'Classic'} · ${fmtTime(res.ms)}s · ${res.moves} moves`;
   $('#scoreboard').innerHTML = scoreboardHTML(res.winnerId);
   renderResultActions();
   iWon ? sfx.win() : sfx.lose();
@@ -822,6 +954,8 @@ function showGo() {
   void n.offsetWidth;
   n.classList.add('tick');
   $('#countdown-label').textContent = '';
+  $('#countdown-challenge').innerHTML = '';
+  $('#countdown-rule').textContent = '';
   setTimeout(() => c.classList.add('hidden'), 450);
 }
 
@@ -855,6 +989,7 @@ function loop() {
     $('#stat-time').textContent = '0.0';
   } else if (state === 'playing') {
     $('#stat-time').textContent = fmtTime(t - goAt);
+    updateVeil(t, goAt, true);
   } else if (endMs != null) {
     $('#stat-time').textContent = fmtTime(endMs);
   }
@@ -887,24 +1022,53 @@ $('#btn-leave-game').onclick = () => {
 };
 
 // ======================================================================= solo practice
-function startSolo() {
+// Best times are kept per challenge. (Older versions stored a single 'best' for classic.)
+const bestKey = (id) => `best:${id}`;
+const getBest = (id) => store.get(bestKey(id), id === 'classic' ? store.get('best', null) : null);
+
+function openSoloPicker() {
+  const list = $('#solo-list');
+  list.innerHTML =
+    `<button class="chip wide" data-id="random"><span class="ci">🎲</span><span class="cn">Surprise me</span><span class="stars"></span></button>` +
+    CHALLENGE_IDS.map((id) => {
+      const best = getBest(id);
+      return `<button class="chip wide" data-id="${id}"><span class="ci">${CHALLENGES[id].icon}</span>
+        <span class="cn">${CHALLENGES[id].name}<small>${best ? `best ${fmtTime(best.ms)}s` : CHALLENGES[id].rule}</small></span>
+        <span class="stars">${starsOf(id)}</span></button>`;
+    }).join('');
+  $('#overlay-solo').classList.remove('hidden');
+}
+$('#solo-list').onclick = (e) => {
+  let id = e.target.closest('button')?.dataset.id;
+  if (!id) return;
+  if (id === 'random') id = CHALLENGE_IDS[Math.floor(Math.random() * CHALLENGE_IDS.length)];
+  $('#overlay-solo').classList.add('hidden');
+  sfx.pop();
+  startSolo(id);
+};
+$('#overlay-solo [data-close]').onclick = () => $('#overlay-solo').classList.add('hidden');
+
+function startSolo(id = S.solo?.id || 'classic') {
   S.mode = 'solo';
   hideOverlays();
   for (const el of oppEls.values()) el.remove();
   oppEls.clear();
-  const target = makeTarget();
-  const board = makeBoard(target);
-  S.solo = { target, moves: 0, state: 'countdown', goAt: Date.now() + 3000, ms: null };
+  const goal = makeGoal(id);
+  const board = makeBoardFor(goal);
+  S.solo = { id, goal, moves: 0, state: 'countdown', goAt: Date.now() + 3000, ms: null };
   S.lastCountdown = null;
+  S.peekUntil = 0;
+  S.peekFrozen = false;
   lastMatchCount = 0;
-  tray.target = null;
+  tray.goal = null;
+  tray.region = goal.cells;
   tray.reset(board);
   tray.enabled = false;
-  renderTarget(null);
+  renderTarget(null, false, id);
   renderSoloCard();
   $('#reactions').classList.add('solo');
   $('#spectate').classList.add('hidden');
-  $('#countdown-label').textContent = 'Solo';
+  renderBriefing(id, 'Solo');
   $('#countdown').classList.remove('hidden');
   $('#board').classList.add('locked');
   show('game');
@@ -914,10 +1078,10 @@ function startSolo() {
     if (S.solo !== solo) return;
     solo.state = 'playing';
     solo.goAt = Date.now();
-    tray.target = target;
-    renderTarget(target, true);
+    tray.goal = goal;
+    renderTarget(goal, true);
     tray.highlight();
-    lastMatchCount = matches(tray.board, target);
+    lastMatchCount = progress(tray.board, goal).n;
     tray.enabled = true;
     $('#board').classList.remove('locked');
     sfx.go();
@@ -926,9 +1090,10 @@ function startSolo() {
 }
 
 function renderSoloCard() {
-  const best = store.get('best', null);
+  const id = S.solo.id;
+  const best = getBest(id);
   const played = store.get('played', 0);
-  $('#opponents').innerHTML = `<div class="opp"><div class="opp-head"><span class="opp-name">Solo practice</span></div>
+  $('#opponents').innerHTML = `<div class="opp"><div class="opp-head"><span class="opp-name">Solo · ${esc(CHALLENGES[id].name)}</span></div>
     <div class="opp-meter"><span class="num">${best ? `${fmtTime(best.ms)}<small>s best</small>` : '<small>No best time yet</small>'}</span>
     <span class="opp-moves">${best ? `${best.moves} moves · ` : ''}${played} solved</span></div></div>`;
 }
@@ -936,27 +1101,30 @@ function renderSoloCard() {
 function soloMove() {
   const s = S.solo;
   s.moves += 1;
-  matchSound(s.target);
+  matchSound(s.goal);
   renderStats();
-  if (!isSolved(tray.board, s.target)) return;
+  if (!goalSolved(tray.board, s.goal)) return;
   s.state = 'done';
   s.ms = Date.now() - s.goAt;
   tray.enabled = false;
   $('#board').classList.add('solved');
-  const best = store.get('best', null);
+  $('#target').classList.remove('veiled');
+  $('#btn-peek').classList.add('hidden');
+  const best = getBest(s.id);
   const isBest = !best || s.ms < best.ms;
-  if (isBest) store.set('best', { ms: s.ms, moves: s.moves });
+  if (isBest) store.set(bestKey(s.id), { ms: s.ms, moves: s.moves });
   store.set('played', store.get('played', 0) + 1);
   sfx.win();
   confetti(isBest ? 220 : 90);
   $('#result-emoji').textContent = isBest ? '🏆' : '🎉';
   $('#result-title').textContent = isBest ? 'New personal best!' : 'Solved!';
-  $('#result-sub').textContent = `${fmtTime(s.ms)}s · ${s.moves} moves${!isBest ? ` · best ${fmtTime(best.ms)}s` : ''}`;
+  $('#result-sub').textContent = `${CHALLENGES[s.id].name} · ${fmtTime(s.ms)}s · ${s.moves} moves${!isBest ? ` · best ${fmtTime(best.ms)}s` : ''}`;
   $('#scoreboard').innerHTML = '';
   $('#result-hint').textContent = '';
   const box = $('#result-actions');
   box.innerHTML = '';
-  box.append(button('Play again', 'btn primary big', startSolo));
+  box.append(button('Play again', 'btn primary big', () => startSolo(s.id)));
+  box.append(button('Try another challenge', 'btn ghost', openSoloPicker));
   box.append(button('Home', 'btn ghost', () => goHome()));
   setTimeout(() => S.solo === s && $('#overlay-result').classList.remove('hidden'), 800);
   renderSoloCard();
@@ -1013,6 +1181,9 @@ function confetti(n) {
 }
 
 // ======================================================================= boot
+$('#howto-challenges').innerHTML = CHALLENGE_IDS.map(
+  (id) => `<li><span>${CHALLENGES[id].icon}</span><div><b>${CHALLENGES[id].name}</b> <span class="stars">${starsOf(id)}</span><br>${esc(CHALLENGES[id].rule)}</div></li>`,
+).join('');
 setSound(soundOn);
 $('#name').value = store.get('name', '');
 initLogo();

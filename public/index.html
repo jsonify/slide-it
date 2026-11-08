@@ -86,6 +86,20 @@
           </div>
         </div>
 
+        <div class="settings-card challenge-card" id="challenge-card">
+          <span class="label">Challenges</span>
+          <div class="segmented" id="preset-seg"></div>
+          <div class="chip-grid" id="challenge-list"></div>
+          <div class="order-row" id="order-row">
+            <span class="label">Order</span>
+            <div class="segmented two" id="order-seg">
+              <button data-o="shuffle">Shuffle</button>
+              <button data-o="climb">Get harder</button>
+            </div>
+          </div>
+          <p class="hint" id="challenge-summary"></p>
+        </div>
+
         <div class="lobby-actions">
           <button class="btn primary big" id="btn-start">Start game</button>
           <p class="hint" id="lobby-hint"></p>
@@ -108,8 +122,12 @@
 
         <div class="side">
           <div class="target-card">
-            <span class="label">Match this</span>
-            <div class="target" id="target"></div>
+            <span class="label" id="target-name">Match this</span>
+            <div class="target-box">
+              <div class="target" id="target"></div>
+              <button class="peek hidden" id="btn-peek">👁 Peek</button>
+            </div>
+            <span class="target-how hidden" id="target-how"></span>
           </div>
           <div class="opponents" id="opponents"></div>
         </div>
@@ -122,7 +140,12 @@
         <div class="reactions" id="reactions"></div>
       </div>
 
-      <div class="countdown hidden" id="countdown"><div><small id="countdown-label">Round 1</small><span id="countdown-n">3</span></div></div>
+      <div class="countdown hidden" id="countdown"><div>
+        <small id="countdown-label">Round 1</small>
+        <div class="brief" id="countdown-challenge"></div>
+        <span id="countdown-n">3</span>
+        <p class="brief-rule" id="countdown-rule"></p>
+      </div></div>
       <div class="floaters" id="floaters"></div>
     </section>
 
@@ -148,7 +171,19 @@
           <li>First to make the <b>middle 3×3</b> of their tray match the target wins the round. The outer ring doesn't matter.</li>
           <li>Win enough rounds to take the match. Watch your friends' trays update live!</li>
         </ol>
+        <h3>Challenges</h3>
+        <p class="howto-note">The host picks which challenges are in the match. Each round tells you which one is coming during the countdown.</p>
+        <ul class="howto-challenges" id="howto-challenges"></ul>
         <button class="btn primary" data-close>Got it</button>
+      </div>
+    </div>
+
+    <div class="overlay hidden" id="overlay-solo">
+      <div class="sheet solo-sheet">
+        <h2>Solo practice</h2>
+        <p class="result-sub">Pick a challenge. Best times are saved for each one.</p>
+        <div class="chip-grid one" id="solo-list"></div>
+        <button class="btn ghost" data-close>Cancel</button>
       </div>
     </div>
 
