@@ -311,6 +311,15 @@ function show(name) {
 }
 
 // ======================================================================= network
+// Where the game server lives. Empty = same site (Render, local dev). When the
+// page is hosted somewhere static like Vercel, config.js points this at the
+// real server, e.g. https://slide-it.onrender.com.
+const SERVER = String(window.SLIDEIT_SERVER || '').replace(/\/+$/, '');
+const wsURL = () => {
+  if (!SERVER) return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+  return `${SERVER.replace(/^http/, 'ws')}/ws`;
+};
+let everConnected = false;
 const net = {
   ws: null,
   want: false,
@@ -325,11 +334,12 @@ const net = {
   connect() {
     clearTimeout(this.timer);
     if (this.ws && this.ws.readyState <= 1) return;
-    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+    const ws = new WebSocket(wsURL());
     this.ws = ws;
-    const slow = setTimeout(() => this.want && $('#conn').classList.remove('hidden'), 1500);
+    const slow = setTimeout(() => this.want && showConn(), 1500);
     ws.onopen = () => {
       clearTimeout(slow);
+      everConnected = true;
       this.retry = 0;
       $('#conn').classList.add('hidden');
       if (this.hello) this.send(this.hello);
@@ -346,7 +356,7 @@ const net = {
     ws.onclose = () => {
       clearTimeout(slow);
       if (this.ws !== ws || !this.want) return;
-      $('#conn').classList.remove('hidden');
+      showConn();
       this.timer = setTimeout(() => this.connect(), Math.min(4000, 250 * 2 ** this.retry++));
     };
   },
@@ -364,6 +374,16 @@ const net = {
     this.ws = null;
   },
 };
+// A free server that was asleep can take ~30s to wake up on the first visit.
+function showConn() {
+  const c = $('#conn');
+  c.textContent = everConnected ? 'Reconnecting…' : 'Waking up the game server… (can take up to 30s)';
+  c.classList.remove('hidden');
+}
+// Nudge a sleeping server awake as soon as the page opens, so it's ready by
+// the time someone taps Create or Join.
+if (SERVER) fetch(`${SERVER}/health`, { mode: 'no-cors', cache: 'no-store' }).catch(() => {});
+
 // Phones suspend sockets in the background — reconnect the moment we're back.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && net.want) {

@@ -1,0 +1,6 @@
+# Vercel only hosts the static page; the game server runs on Render.
+server.js
+Dockerfile
+render.yaml
+ios
+test

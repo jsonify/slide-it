@@ -49,6 +49,20 @@ like `https://slide-it.onrender.com`. Send that to your friends.
 **Fly.io / Railway / anywhere with Docker:** a `Dockerfile` is included.
 The server listens on `$PORT`.
 
+**Vercel (page only):** Vercel can't run the game server, because it needs a
+long-lived WebSocket process. It can host the page while the game itself runs
+on Render (or any host above):
+
+1. Deploy the server to Render first and note its URL.
+2. Import the repo in Vercel. `vercel.json` makes it a static site from `public/`.
+3. In Vercel go to *Settings → Environment Variables* and add
+   `SLIDEIT_SERVER` = `https://<your-app>.onrender.com`, then redeploy.
+
+The build writes that URL into `public/config.js`, and the page connects to the
+Render server from there. Invite links use the Vercel address. If the variable
+is missing, the Vercel build fails with a message saying so, instead of
+deploying a page that can't connect.
+
 ## How to play
 
 1. One person taps **Create a game** and then **Invite friends** (or reads out the code).
@@ -93,6 +107,8 @@ public/game.js      Shared rules (deal, slide, win check), used by server AND br
 public/app.js       Client: screens, animated tray, networking, sound, haptics
 public/style.css    Styles / responsive layouts
 public/index.html   App shell + PWA metadata
+public/config.js    Game server URL (empty = same site; set at build time on Vercel)
+scripts/            vercel-config.js: Vercel build step that writes config.js
 test/               node:test unit tests + a full two-player match over WebSockets
 ```
 
